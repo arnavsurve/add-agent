@@ -1,0 +1,13 @@
+# fly.toml - Fly Machines configuration for ADD Agent
+# This service runs as on-demand containers, not a persistent app
+
+app = "add-agent"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+
+# No HTTP service - this runs as a one-shot job
+# Machines are spawned via API, run agent, then auto-destroy
