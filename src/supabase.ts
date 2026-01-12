@@ -14,6 +14,8 @@ export type ProgressLogType =
   | 'commit'
   | 'complete'
   | 'error'
+  | 'tool_call'
+  | 'response'
 
 // Insert a progress log (will appear in UI via real-time subscription)
 export async function logProgress(

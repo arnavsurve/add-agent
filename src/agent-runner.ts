@@ -147,37 +147,159 @@ async function handleEvent(
   agentRunId: string,
   ticketId: string,
 ): Promise<void> {
-  // Only process events for our session
+  // Type-safe property access helpers
+  const props = event.properties as Record<string, unknown>;
+
+  // Debug: log all event types
+  console.log(`[Event] ${event.type}`, JSON.stringify(props, null, 2).slice(0, 500));
+
   switch (event.type) {
-    case "file.edited":
-      await logProgress(
-        agentRunId,
-        ticketId,
-        "file_edit",
-        `Modified: ${event.properties.file}`,
-      );
-      break;
-    case "session.error":
-      if (event.properties.sessionID === sessionId) {
-        const errorMsg = event.properties.error
-          ? JSON.stringify(event.properties.error)
-          : "Unknown error";
-        await logProgress(agentRunId, ticketId, "error", errorMsg);
+    case "message.part.updated": {
+      const part = props.part as Record<string, unknown>;
+      if (!part) break;
+
+      const partType = part.type as string;
+      const state = part.state as Record<string, unknown> | undefined;
+
+      console.log(`[Part] type=${partType}, state.status=${state?.status}`);
+
+      // Agent reasoning/thinking
+      if (partType === "reasoning") {
+        const text = (part.text as string) || "";
+        const timing = part.time as { start: number; end?: number } | undefined;
+        if (text.trim()) {
+          await logProgress(
+            agentRunId,
+            ticketId,
+            "thinking",
+            text.length > 100 ? text.slice(0, 100) + "..." : text,
+            { fullText: text, timing }
+          );
+        }
+      }
+
+      // Tool calls - capture both pending and completed states
+      if (partType === "tool") {
+        const tool = part.tool as string;
+        const callId = part.callID as string;
+        const status = state?.status as string;
+
+        // Log when tool completes (has output)
+        if (status === "completed") {
+          const input = state?.input;
+          const output = state?.output as string | undefined;
+          const title = state?.title as string | undefined;
+          const timing = state?.time as { start: number; end?: number } | undefined;
+
+          // Truncate large outputs
+          const truncatedOutput = output && output.length > 2000
+            ? output.slice(0, 2000) + "\n... (truncated)"
+            : output;
+
+          await logProgress(
+            agentRunId,
+            ticketId,
+            "tool_call",
+            title || tool,
+            {
+              tool,
+              input,
+              output: truncatedOutput,
+              callId,
+              timing,
+            }
+          );
+        }
+        // Log when tool starts running (for immediate feedback)
+        else if (status === "running" || status === "pending") {
+          const title = state?.title as string | undefined;
+          await logProgress(
+            agentRunId,
+            ticketId,
+            "action",
+            `Running: ${title || tool}`,
+            { tool, callId, status }
+          );
+        }
+      }
+
+      // Agent text responses
+      if (partType === "text") {
+        const text = (part.text as string) || "";
+        if (text.trim()) {
+          await logProgress(
+            agentRunId,
+            ticketId,
+            "response",
+            text.length > 200 ? text.slice(0, 200) + "..." : text,
+            { fullText: text }
+          );
+        }
       }
       break;
-    case "message.part.updated":
-      // Tool usage - log when a tool completes
-      if (
-        event.properties.part.type === "tool" &&
-        event.properties.part.state.status === "completed"
-      ) {
+    }
+
+    case "session.diff": {
+      // File changes with actual diff content
+      const diffs = props.diff as Array<{
+        file: string;
+        before: string;
+        after: string;
+        additions: number;
+        deletions: number;
+      }> | undefined;
+
+      if (diffs) {
+        for (const diff of diffs) {
+          // Truncate very large diffs
+          const truncatedBefore = diff.before && diff.before.length > 5000
+            ? diff.before.slice(0, 5000) + "\n... (truncated)"
+            : diff.before;
+          const truncatedAfter = diff.after && diff.after.length > 5000
+            ? diff.after.slice(0, 5000) + "\n... (truncated)"
+            : diff.after;
+
+          await logProgress(
+            agentRunId,
+            ticketId,
+            "file_edit",
+            `${diff.file} (+${diff.additions}/-${diff.deletions})`,
+            {
+              file: diff.file,
+              before: truncatedBefore,
+              after: truncatedAfter,
+              additions: diff.additions,
+              deletions: diff.deletions,
+            }
+          );
+        }
+      }
+      break;
+    }
+
+    case "file.edited": {
+      // Simple file edit notification (fallback if no session.diff)
+      const file = props.file as string;
+      if (file) {
         await logProgress(
           agentRunId,
           ticketId,
-          "action",
-          `Tool: ${event.properties.part.tool}`,
+          "file_edit",
+          `Modified: ${file}`,
+          { file }
         );
       }
       break;
+    }
+
+    case "session.error": {
+      const errorSessionId = props.sessionID as string;
+      if (errorSessionId === sessionId) {
+        const error = props.error;
+        const errorMsg = error ? JSON.stringify(error) : "Unknown error";
+        await logProgress(agentRunId, ticketId, "error", errorMsg);
+      }
+      break;
+    }
   }
 }
