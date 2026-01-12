@@ -1,8 +1,8 @@
 import { simpleGit } from 'simple-git'
 import { getAuthenticatedCloneUrl, createPullRequest } from './github.js'
 import { logProgress, updateTicketStatus, updateAgentRun } from './supabase.js'
+import { runAgent } from './agent-runner.js'
 import fs from 'fs/promises'
-import path from 'path'
 
 // Job passed via environment variable
 interface AgentJob {
@@ -53,37 +53,28 @@ async function main() {
     await logProgress(job.agentRunId, job.ticketId, 'action', `Created branch: ${job.branchName}`)
     console.log(`Created branch: ${job.branchName}`)
 
-    // 3. Run agent loop
-    await logProgress(job.agentRunId, job.ticketId, 'thinking', 'Analyzing codebase and planning implementation...')
+    // 3. Run AI agent to implement the changes
+    await runAgent({
+      workspace,
+      title: job.title,
+      description: job.description,
+      agentRunId: job.agentRunId,
+      ticketId: job.ticketId,
+    })
 
-    // TODO: Integrate OpenCode SDK here
-    // For now, create a simple placeholder file to demonstrate the flow
-    const placeholderPath = path.join(workspace, 'AGENT_PLACEHOLDER.md')
-    await fs.writeFile(placeholderPath, `# Agent Task
+    // 4. Commit changes (if any)
+    const status = await git.status()
+    if (!status.isClean()) {
+      await git.add('.')
+      await git.commit(`[ADD Agent] ${job.title}\n\nAgent-Run-ID: ${job.agentRunId}`)
+      await logProgress(job.agentRunId, job.ticketId, 'commit', 'Changes committed')
+      console.log('Changes committed')
+    } else {
+      await logProgress(job.agentRunId, job.ticketId, 'action', 'No changes needed')
+      console.log('No changes to commit')
+    }
 
-**Ticket:** ${job.title}
-
-**Description:**
-${job.description}
-
----
-
-This file was created by the ADD agent as a placeholder.
-In the full implementation, the OpenCode SDK will analyze the codebase
-and make real changes based on the ticket description.
-
-Generated at: ${new Date().toISOString()}
-`)
-
-    await logProgress(job.agentRunId, job.ticketId, 'file_edit', 'Created AGENT_PLACEHOLDER.md')
-
-    // 4. Commit changes
-    await git.add('.')
-    await git.commit(`[ADD Agent] ${job.title}\n\nAgent-Run-ID: ${job.agentRunId}`)
-    await logProgress(job.agentRunId, job.ticketId, 'commit', 'Changes committed')
-    console.log('Changes committed')
-
-    // 5. Push branch
+    // 5. Push branch (only if we have commits)
     await logProgress(job.agentRunId, job.ticketId, 'action', 'Pushing to GitHub...')
     await git.push('origin', job.branchName, ['--set-upstream'])
     console.log('Pushed to GitHub')

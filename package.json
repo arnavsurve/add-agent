@@ -12,6 +12,7 @@
   "dependencies": {
     "@octokit/auth-app": "^7.1.1",
     "@octokit/rest": "^21.0.2",
+    "@opencode-ai/sdk": "^1.1.14",
     "@supabase/supabase-js": "^2.90.1",
     "dotenv": "^17.2.3",
     "simple-git": "^3.27.0"
