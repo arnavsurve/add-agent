@@ -150,9 +150,6 @@ async function handleEvent(
   // Type-safe property access helpers
   const props = event.properties as Record<string, unknown>;
 
-  // Debug: log all event types
-  console.log(`[Event] ${event.type}`, JSON.stringify(props, null, 2).slice(0, 500));
-
   switch (event.type) {
     case "message.part.updated": {
       const part = props.part as Record<string, unknown>;
@@ -160,8 +157,6 @@ async function handleEvent(
 
       const partType = part.type as string;
       const state = part.state as Record<string, unknown> | undefined;
-
-      console.log(`[Part] type=${partType}, state.status=${state?.status}`);
 
       // Agent reasoning/thinking
       if (partType === "reasoning") {
@@ -178,49 +173,33 @@ async function handleEvent(
         }
       }
 
-      // Tool calls - capture both pending and completed states
-      if (partType === "tool") {
+      // Tool calls with full details - only log when completed
+      if (partType === "tool" && state?.status === "completed") {
         const tool = part.tool as string;
         const callId = part.callID as string;
-        const status = state?.status as string;
+        const input = state?.input;
+        const output = state?.output as string | undefined;
+        const title = state?.title as string | undefined;
+        const timing = state?.time as { start: number; end?: number } | undefined;
 
-        // Log when tool completes (has output)
-        if (status === "completed") {
-          const input = state?.input;
-          const output = state?.output as string | undefined;
-          const title = state?.title as string | undefined;
-          const timing = state?.time as { start: number; end?: number } | undefined;
+        // Truncate large outputs
+        const truncatedOutput = output && output.length > 2000
+          ? output.slice(0, 2000) + "\n... (truncated)"
+          : output;
 
-          // Truncate large outputs
-          const truncatedOutput = output && output.length > 2000
-            ? output.slice(0, 2000) + "\n... (truncated)"
-            : output;
-
-          await logProgress(
-            agentRunId,
-            ticketId,
-            "tool_call",
-            title || tool,
-            {
-              tool,
-              input,
-              output: truncatedOutput,
-              callId,
-              timing,
-            }
-          );
-        }
-        // Log when tool starts running (for immediate feedback)
-        else if (status === "running" || status === "pending") {
-          const title = state?.title as string | undefined;
-          await logProgress(
-            agentRunId,
-            ticketId,
-            "action",
-            `Running: ${title || tool}`,
-            { tool, callId, status }
-          );
-        }
+        await logProgress(
+          agentRunId,
+          ticketId,
+          "tool_call",
+          title || tool,
+          {
+            tool,
+            input,
+            output: truncatedOutput,
+            callId,
+            timing,
+          }
+        );
       }
 
       // Agent text responses
