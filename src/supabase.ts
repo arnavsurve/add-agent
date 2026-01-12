@@ -16,6 +16,7 @@ export type ProgressLogType =
   | 'error'
   | 'tool_call'
   | 'response'
+  | 'session_changes'
 
 // Insert a progress log (will appear in UI via real-time subscription)
 export async function logProgress(

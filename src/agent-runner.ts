@@ -120,6 +120,9 @@ ${description}
 Please proceed with the implementation.`;
 }
 
+// Track logged diffs to prevent duplicates (session.diff fires multiple times)
+const loggedDiffKeys = new Set<string>();
+
 async function streamEventsToSupabase(
   client: Awaited<ReturnType<typeof createOpencode>>["client"],
   sessionId: string,
@@ -127,6 +130,9 @@ async function streamEventsToSupabase(
   ticketId: string,
   workspace: string,
 ): Promise<void> {
+  // Clear tracked diffs for new session
+  loggedDiffKeys.clear();
+
   try {
     const eventResult = await client.event.subscribe({
       query: { directory: workspace },
@@ -202,24 +208,14 @@ async function handleEvent(
         );
       }
 
-      // Agent text responses
-      if (partType === "text") {
-        const text = (part.text as string) || "";
-        if (text.trim()) {
-          await logProgress(
-            agentRunId,
-            ticketId,
-            "response",
-            text.length > 200 ? text.slice(0, 200) + "..." : text,
-            { fullText: text }
-          );
-        }
-      }
+      // Note: Text responses (partType === "text") are not logged individually
+      // because they fire for every streaming token, causing massive duplication.
+      // The tool calls provide the meaningful action log.
       break;
     }
 
     case "session.diff": {
-      // File changes with actual diff content
+      // File changes - store for "Changes" tab (not in main agent log)
       const diffs = props.diff as Array<{
         file: string;
         before: string;
@@ -230,6 +226,13 @@ async function handleEvent(
 
       if (diffs) {
         for (const diff of diffs) {
+          // Deduplicate based on file + content
+          const diffKey = `${diff.file}:${(diff.after || "").slice(0, 100)}`;
+          if (loggedDiffKeys.has(diffKey)) {
+            continue;
+          }
+          loggedDiffKeys.add(diffKey);
+
           // Truncate very large diffs
           const truncatedBefore = diff.before && diff.before.length > 5000
             ? diff.before.slice(0, 5000) + "\n... (truncated)"
@@ -238,10 +241,11 @@ async function handleEvent(
             ? diff.after.slice(0, 5000) + "\n... (truncated)"
             : diff.after;
 
+          // Log as session_changes type (for separate Changes tab, not agent log)
           await logProgress(
             agentRunId,
             ticketId,
-            "file_edit",
+            "session_changes",
             `${diff.file} (+${diff.additions}/-${diff.deletions})`,
             {
               file: diff.file,
@@ -256,20 +260,7 @@ async function handleEvent(
       break;
     }
 
-    case "file.edited": {
-      // Simple file edit notification (fallback if no session.diff)
-      const file = props.file as string;
-      if (file) {
-        await logProgress(
-          agentRunId,
-          ticketId,
-          "file_edit",
-          `Modified: ${file}`,
-          { file }
-        );
-      }
-      break;
-    }
+    // Note: file.edited events are ignored since session.diff provides richer data
 
     case "session.error": {
       const errorSessionId = props.sessionID as string;
