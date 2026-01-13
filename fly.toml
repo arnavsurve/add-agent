@@ -11,3 +11,14 @@ primary_region = "sjc"
 
 # No HTTP service - this runs as a one-shot job
 # Machines are spawned via API, run agent, then auto-destroy
+
+# Disable deploy smoke checks - the app exits when AGENT_JOB isn't set
+# which is expected for worker-style apps
+[deploy]
+  strategy = "immediate"
+
+# VM resources for agent workers
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
