@@ -1,57 +1,72 @@
-import { simpleGit } from 'simple-git'
-import { getAuthenticatedCloneUrl, createPullRequest } from './github.js'
-import { logProgress, updateTicketStatus, updateAgentRun } from './supabase.js'
-import { runAgent } from './agent-runner.js'
-import fs from 'fs/promises'
+import { simpleGit } from "simple-git";
+import { getAuthenticatedCloneUrl, createPullRequest } from "./github.js";
+import { logProgress, updateTicketStatus, updateAgentRun } from "./supabase.js";
+import { runAgent } from "./agent-runner.js";
+import fs from "fs/promises";
 
 // Job passed via environment variable
 interface AgentJob {
-  ticketId: string
-  agentRunId: string
-  repoUrl: string
-  branchName: string
-  title: string
-  description: string
+  ticketId: string;
+  agentRunId: string;
+  repoUrl: string;
+  branchName: string;
+  title: string;
+  description: string;
 }
 
 async function main() {
   // Parse job from environment
-  const jobJson = process.env.AGENT_JOB
+  const jobJson = process.env.AGENT_JOB;
   if (!jobJson) {
-    console.error('AGENT_JOB environment variable not set')
-    process.exit(1)
+    console.error("AGENT_JOB environment variable not set");
+    process.exit(1);
   }
 
-  const job: AgentJob = JSON.parse(jobJson)
-  const workspace = `/tmp/workspace-${job.ticketId}`
+  const job: AgentJob = JSON.parse(jobJson);
+  const workspace = `/tmp/workspace-${job.ticketId}`;
 
-  console.log(`Starting agent for ticket: ${job.title}`)
-  console.log(`Repo: ${job.repoUrl}`)
-  console.log(`Branch: ${job.branchName}`)
+  console.log(`Starting agent for ticket: ${job.title}`);
+  console.log(`Repo: ${job.repoUrl}`);
+  console.log(`Branch: ${job.branchName}`);
 
   try {
-    await logProgress(job.agentRunId, job.ticketId, 'started', `Agent starting for: ${job.title}`)
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "started",
+      `Agent starting for: ${job.title}`,
+    );
 
     // 0. Clean up workspace if it exists (from previous failed runs)
     try {
-      await fs.rm(workspace, { recursive: true, force: true })
+      await fs.rm(workspace, { recursive: true, force: true });
     } catch {
       // Ignore if doesn't exist
     }
 
     // 1. Clone repository
-    await logProgress(job.agentRunId, job.ticketId, 'thinking', 'Cloning repository...')
-    const authUrl = await getAuthenticatedCloneUrl(job.repoUrl)
-    await simpleGit().clone(authUrl, workspace)
-    console.log('Repository cloned')
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "thinking",
+      "Cloning repository",
+    );
+    const authUrl = await getAuthenticatedCloneUrl(job.repoUrl);
+    await simpleGit().clone(authUrl, workspace);
+    console.log("Repository cloned");
 
     // 2. Create branch and configure git identity
-    const git = simpleGit(workspace)
-    await git.addConfig('user.email', 'agent@add.dev')
-    await git.addConfig('user.name', 'ADD Agent')
-    await git.checkoutLocalBranch(job.branchName)
-    await logProgress(job.agentRunId, job.ticketId, 'action', `Created branch: ${job.branchName}`)
-    console.log(`Created branch: ${job.branchName}`)
+    const git = simpleGit(workspace);
+    await git.addConfig("user.email", "agent@add.dev");
+    await git.addConfig("user.name", "ADD Agent");
+    await git.checkoutLocalBranch(job.branchName);
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "action",
+      `Created branch: ${job.branchName}`,
+    );
+    console.log(`Created branch: ${job.branchName}`);
 
     // 3. Run AI agent to implement the changes
     await runAgent({
@@ -60,27 +75,49 @@ async function main() {
       description: job.description,
       agentRunId: job.agentRunId,
       ticketId: job.ticketId,
-    })
+    });
 
     // 4. Commit changes (if any)
-    const status = await git.status()
+    const status = await git.status();
     if (!status.isClean()) {
-      await git.add('.')
-      await git.commit(`[ADD Agent] ${job.title}\n\nAgent-Run-ID: ${job.agentRunId}`)
-      await logProgress(job.agentRunId, job.ticketId, 'commit', 'Changes committed')
-      console.log('Changes committed')
+      await git.add(".");
+      await git.commit(
+        `[ADD Agent] ${job.title}\n\nAgent-Run-ID: ${job.agentRunId}`,
+      );
+      await logProgress(
+        job.agentRunId,
+        job.ticketId,
+        "commit",
+        "Changes committed",
+      );
+      console.log("Changes committed");
     } else {
-      await logProgress(job.agentRunId, job.ticketId, 'action', 'No changes needed')
-      console.log('No changes to commit')
+      await logProgress(
+        job.agentRunId,
+        job.ticketId,
+        "action",
+        "No changes needed",
+      );
+      console.log("No changes to commit");
     }
 
     // 5. Push branch (only if we have commits)
-    await logProgress(job.agentRunId, job.ticketId, 'action', 'Pushing to GitHub...')
-    await git.push('origin', job.branchName, ['--set-upstream'])
-    console.log('Pushed to GitHub')
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "action",
+      "Pushing to GitHub...",
+    );
+    await git.push("origin", job.branchName, ["--set-upstream"]);
+    console.log("Pushed to GitHub");
 
     // 6. Create PR
-    await logProgress(job.agentRunId, job.ticketId, 'thinking', 'Creating pull request...')
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "thinking",
+      "Creating pull request...",
+    );
     const prUrl = await createPullRequest(
       job.repoUrl,
       job.branchName,
@@ -95,24 +132,29 @@ ${job.description}
 ---
 
 Agent-Run-ID: \`${job.agentRunId}\`
-*Generated by ADD Agent*`
-    )
-    console.log(`PR created: ${prUrl}`)
+*Generated by ADD Agent*`,
+    );
+    console.log(`PR created: ${prUrl}`);
 
     // 7. Update ticket and agent run
-    await logProgress(job.agentRunId, job.ticketId, 'complete', `PR created: ${prUrl}`, { prUrl })
-    await updateTicketStatus(job.ticketId, 'review', prUrl)
-    await updateAgentRun(job.agentRunId, 'complete')
+    await logProgress(
+      job.agentRunId,
+      job.ticketId,
+      "complete",
+      `PR created: ${prUrl}`,
+      { prUrl },
+    );
+    await updateTicketStatus(job.ticketId, "review", prUrl);
+    await updateAgentRun(job.agentRunId, "complete");
 
-    console.log('Agent completed successfully!')
-    process.exit(0)
-
+    console.log("Agent completed successfully!");
+    process.exit(0);
   } catch (error) {
-    console.error('Agent failed:', error)
-    await logProgress(job.agentRunId, job.ticketId, 'error', String(error))
-    await updateAgentRun(job.agentRunId, 'failed', String(error))
-    process.exit(1)
+    console.error("Agent failed:", error);
+    await logProgress(job.agentRunId, job.ticketId, "error", String(error));
+    await updateAgentRun(job.agentRunId, "failed", String(error));
+    process.exit(1);
   }
 }
 
-main()
+main();

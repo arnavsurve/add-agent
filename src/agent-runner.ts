@@ -12,12 +12,7 @@ interface RunAgentOptions {
 export async function runAgent(options: RunAgentOptions): Promise<void> {
   const { workspace, title, description, agentRunId, ticketId } = options;
 
-  await logProgress(
-    agentRunId,
-    ticketId,
-    "thinking",
-    "Starting agent runtime...",
-  );
+  await logProgress(agentRunId, ticketId, "thinking", "Starting agent runtime");
 
   // Create embedded server + client
   const { client, server } = await createOpencode({
@@ -59,12 +54,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
 
     // Build and send prompt
     const prompt = buildPrompt(title, description);
-    await logProgress(
-      agentRunId,
-      ticketId,
-      "thinking",
-      "Analyzing codebase and implementing changes...",
-    );
+    await logProgress(agentRunId, ticketId, "thinking", "Exploring...");
 
     const promptResult = await client.session.prompt({
       path: { id: sessionId },
@@ -174,7 +164,7 @@ async function handleEvent(
             ticketId,
             "thinking",
             text.length > 100 ? text.slice(0, 100) + "..." : text,
-            { fullText: text, timing }
+            { fullText: text, timing },
           );
         }
       }
@@ -186,26 +176,23 @@ async function handleEvent(
         const input = state?.input;
         const output = state?.output as string | undefined;
         const title = state?.title as string | undefined;
-        const timing = state?.time as { start: number; end?: number } | undefined;
+        const timing = state?.time as
+          | { start: number; end?: number }
+          | undefined;
 
         // Truncate large outputs
-        const truncatedOutput = output && output.length > 2000
-          ? output.slice(0, 2000) + "\n... (truncated)"
-          : output;
+        const truncatedOutput =
+          output && output.length > 2000
+            ? output.slice(0, 2000) + "\n... (truncated)"
+            : output;
 
-        await logProgress(
-          agentRunId,
-          ticketId,
-          "tool_call",
-          title || tool,
-          {
-            tool,
-            input,
-            output: truncatedOutput,
-            callId,
-            timing,
-          }
-        );
+        await logProgress(agentRunId, ticketId, "tool_call", title || tool, {
+          tool,
+          input,
+          output: truncatedOutput,
+          callId,
+          timing,
+        });
       }
 
       // Note: Text responses (partType === "text") are not logged individually
@@ -216,13 +203,15 @@ async function handleEvent(
 
     case "session.diff": {
       // File changes - store for "Changes" tab (not in main agent log)
-      const diffs = props.diff as Array<{
-        file: string;
-        before: string;
-        after: string;
-        additions: number;
-        deletions: number;
-      }> | undefined;
+      const diffs = props.diff as
+        | Array<{
+            file: string;
+            before: string;
+            after: string;
+            additions: number;
+            deletions: number;
+          }>
+        | undefined;
 
       if (diffs) {
         for (const diff of diffs) {
@@ -234,12 +223,14 @@ async function handleEvent(
           loggedDiffKeys.add(diffKey);
 
           // Truncate very large diffs
-          const truncatedBefore = diff.before && diff.before.length > 5000
-            ? diff.before.slice(0, 5000) + "\n... (truncated)"
-            : diff.before;
-          const truncatedAfter = diff.after && diff.after.length > 5000
-            ? diff.after.slice(0, 5000) + "\n... (truncated)"
-            : diff.after;
+          const truncatedBefore =
+            diff.before && diff.before.length > 5000
+              ? diff.before.slice(0, 5000) + "\n... (truncated)"
+              : diff.before;
+          const truncatedAfter =
+            diff.after && diff.after.length > 5000
+              ? diff.after.slice(0, 5000) + "\n... (truncated)"
+              : diff.after;
 
           // Log as session_changes type (for separate Changes tab, not agent log)
           await logProgress(
@@ -253,7 +244,7 @@ async function handleEvent(
               after: truncatedAfter,
               additions: diff.additions,
               deletions: diff.deletions,
-            }
+            },
           );
         }
       }
