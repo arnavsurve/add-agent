@@ -4,10 +4,9 @@ import { Octokit } from "@octokit/rest";
 // GitHub App credentials from environment
 const appId = process.env.GITHUB_APP_ID!;
 const privateKey = process.env.GITHUB_APP_PRIVATE_KEY!;
-const installationId = process.env.GITHUB_APP_INSTALLATION_ID!;
 
-// Create authenticated Octokit instance
-export function createOctokit(): Octokit {
+// Create authenticated Octokit instance for a specific installation
+export function createOctokit(installationId: string): Octokit {
   return new Octokit({
     authStrategy: createAppAuth,
     auth: {
@@ -21,9 +20,8 @@ export function createOctokit(): Octokit {
 // Get authenticated clone URL for a repo
 export async function getAuthenticatedCloneUrl(
   repoUrl: string,
+  installationId: string,
 ): Promise<string> {
-  const octokit = createOctokit();
-
   // Get installation access token
   const auth = createAppAuth({
     appId,
@@ -50,8 +48,9 @@ export async function createPullRequest(
   branchName: string,
   title: string,
   body: string,
+  installationId: string,
 ): Promise<string> {
-  const octokit = createOctokit();
+  const octokit = createOctokit(installationId);
 
   // Parse owner/repo from URL
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/);
