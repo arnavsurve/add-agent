@@ -116,7 +116,7 @@ async function main() {
       job.agentRunId,
       job.ticketId,
       "thinking",
-      "Creating pull request...",
+      "Creating pull request",
     );
     const prUrl = await createPullRequest(
       job.repoUrl,
