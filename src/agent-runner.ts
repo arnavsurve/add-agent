@@ -1,4 +1,5 @@
-import { createOpencode, type Event } from "@opencode-ai/sdk";
+import { createOpencodeClient, type Event } from "@opencode-ai/sdk";
+import { createOpencodeServer } from "@opencode-ai/sdk";
 import { logProgress } from "./supabase.js";
 
 interface RunAgentOptions {
@@ -9,13 +10,34 @@ interface RunAgentOptions {
   ticketId: string;
 }
 
+// Custom fetch with extended timeout for long-running agent tasks
+// Default Node.js fetch timeout is ~5 minutes which is too short for complex tasks
+const AGENT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+function createLongTimeoutFetch(): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(input, {
+        ...init,
+        signal: init?.signal ?? controller.signal,
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+}
+
 export async function runAgent(options: RunAgentOptions): Promise<void> {
   const { workspace, title, description, agentRunId, ticketId } = options;
 
   await logProgress(agentRunId, ticketId, "thinking", "Starting agent runtime");
 
-  // Create embedded server + client
-  const { client, server } = await createOpencode({
+  // Create embedded server
+  const server = await createOpencodeServer({
     port: 4096,
     timeout: 30000, // 30 seconds for server startup (default is 5s)
     config: {
@@ -31,7 +53,13 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     },
   });
 
-  console.log("OpenCode server ready");
+  // Create client with custom fetch for extended timeout
+  const client = createOpencodeClient({
+    baseUrl: server.url,
+    fetch: createLongTimeoutFetch(),
+  });
+
+  console.log("OpenCode server ready (30 min timeout configured)");
 
   try {
     // Create session in the workspace
@@ -114,7 +142,7 @@ Please proceed with the implementation.`;
 const loggedDiffKeys = new Set<string>();
 
 async function streamEventsToSupabase(
-  client: Awaited<ReturnType<typeof createOpencode>>["client"],
+  client: ReturnType<typeof createOpencodeClient>,
   sessionId: string,
   agentRunId: string,
   ticketId: string,
