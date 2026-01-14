@@ -42,17 +42,11 @@ export async function logProgress(
 // Update ticket status
 export async function updateTicketStatus(
   ticketId: string,
-  status: string,
-  prUrl?: string
+  status: string
 ): Promise<void> {
-  const update: Record<string, unknown> = { status }
-  if (prUrl) {
-    update.pr_url = prUrl
-  }
-
   const { error } = await supabase
     .from('tickets')
-    .update(update)
+    .update({ status })
     .eq('id', ticketId)
 
   if (error) {

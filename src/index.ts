@@ -201,7 +201,7 @@ Agent-Run-ID: \`${job.agentRunId}\`
       `PR created: ${prUrl}`,
       { prUrl },
     );
-    await updateTicketStatus(job.ticketId, "review", prUrl);
+    await updateTicketStatus(job.ticketId, "review");
     await updateAgentRun(job.agentRunId, "complete", undefined, prUrl);
 
     console.log("Agent completed successfully!");
