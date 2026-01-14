@@ -19,7 +19,7 @@ function extractErrorMessage(error: unknown): string {
     if (cause instanceof Error) {
       return `${error.message}: ${cause.message}`;
     }
-    
+
     // Check for Git errors with more details
     const gitError = error as Error & { task?: { commands?: string[] } };
     if (gitError.task?.commands) {
@@ -104,13 +104,16 @@ async function main() {
       "thinking",
       "Cloning repository",
     );
-    const authUrl = await getAuthenticatedCloneUrl(job.repoUrl, job.installationId);
+    const authUrl = await getAuthenticatedCloneUrl(
+      job.repoUrl,
+      job.installationId,
+    );
     await simpleGit().clone(authUrl, workspace);
     console.log("Repository cloned");
 
     // 2. Create branch and configure git identity
     const git = simpleGit(workspace);
-    await git.addConfig("user.email", "agent@add.dev");
+    await git.addConfig("user.email", "arnav@surve.dev");
     await git.addConfig("user.name", "ADD Agent");
     await git.checkoutLocalBranch(job.branchName);
     await logProgress(
@@ -199,7 +202,7 @@ Agent-Run-ID: \`${job.agentRunId}\`
       { prUrl },
     );
     await updateTicketStatus(job.ticketId, "review", prUrl);
-    await updateAgentRun(job.agentRunId, "complete");
+    await updateAgentRun(job.agentRunId, "complete", undefined, prUrl);
 
     console.log("Agent completed successfully!");
     process.exit(0);
@@ -207,17 +210,17 @@ Agent-Run-ID: \`${job.agentRunId}\`
     const errorMessage = extractErrorMessage(error);
     console.error("Agent failed:", errorMessage);
     console.error("Full error:", error);
-    
+
     // Log detailed error to progress logs for user visibility
     await logProgress(job.agentRunId, job.ticketId, "error", errorMessage);
-    
+
     // Update agent run as failed
     await updateAgentRun(job.agentRunId, "failed", errorMessage);
-    
+
     // Update ticket status back to queued so user can retry
     // (keeping it in-progress would be misleading since agent is dead)
     await updateTicketStatus(job.ticketId, "queued");
-    
+
     process.exit(1);
   }
 }

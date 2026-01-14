@@ -64,7 +64,8 @@ export async function updateTicketStatus(
 export async function updateAgentRun(
   agentRunId: string,
   status: 'running' | 'complete' | 'failed',
-  error?: string
+  error?: string,
+  prUrl?: string
 ): Promise<void> {
   const update: Record<string, unknown> = {
     status,
@@ -72,6 +73,9 @@ export async function updateAgentRun(
   }
   if (error) {
     update.error = error
+  }
+  if (prUrl) {
+    update.pr_url = prUrl
   }
 
   const { error: updateError } = await supabase
