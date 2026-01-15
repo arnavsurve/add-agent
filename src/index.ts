@@ -1,6 +1,12 @@
 import { simpleGit } from "simple-git";
 import { getAuthenticatedCloneUrl, createPullRequest } from "./github.js";
-import { logProgress, updateTicketStatus, updateAgentRun } from "./supabase.js";
+import {
+  logProgress,
+  updateTicketStatus,
+  updateAgentRun,
+  updateAgentRunBranch,
+  markAgentRunPushed,
+} from "./supabase.js";
 import { runAgent } from "./agent-runner.js";
 import fs from "fs/promises";
 
@@ -55,6 +61,66 @@ function extractErrorMessage(error: unknown): string {
   return `Unknown error: ${String(error)}`;
 }
 
+function isNonFastForwardError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : JSON.stringify(error);
+
+  return (
+    message.includes("non-fast-forward") ||
+    message.includes("failed to push some refs")
+  );
+}
+
+async function pushWithRebase(
+  git: ReturnType<typeof simpleGit>,
+  branchName: string,
+  agentRunId: string,
+  ticketId: string,
+): Promise<void> {
+  try {
+    await git.push("origin", branchName, ["--set-upstream"]);
+  } catch (error) {
+    if (!isNonFastForwardError(error)) {
+      throw error;
+    }
+
+    await logProgress(
+      agentRunId,
+      ticketId,
+      "action",
+      "Remote branch updated; rebasing before retrying push",
+    );
+
+    await git.fetch("origin", branchName);
+
+    try {
+      await git.rebase([`origin/${branchName}`]);
+    } catch (rebaseError) {
+      try {
+        await git.rebase(["--abort"]);
+      } catch {
+        // Ignore rebase abort failures; surface original error
+      }
+      throw new Error(
+        `Rebase failed due to conflicts. Please re-run the agent after resolving conflicts on ${branchName}.`,
+      );
+    }
+
+    await logProgress(
+      agentRunId,
+      ticketId,
+      "action",
+      "Rebase complete; retrying push",
+    );
+
+    await git.push("origin", branchName, ["--set-upstream"]);
+  }
+}
+
 // Job passed via environment variable
 interface AgentJob {
   ticketId: string;
@@ -76,10 +142,11 @@ async function main() {
 
   const job: AgentJob = JSON.parse(jobJson);
   const workspace = `/tmp/workspace-${job.ticketId}`;
+  const runBranchName = `${job.branchName}-${job.agentRunId.slice(0, 8)}`;
 
   console.log(`Starting agent for ticket: ${job.title}`);
   console.log(`Repo: ${job.repoUrl}`);
-  console.log(`Branch: ${job.branchName}`);
+  console.log(`Branch: ${runBranchName}`);
   console.log(`Installation ID: ${job.installationId}`);
 
   try {
@@ -115,14 +182,15 @@ async function main() {
     const git = simpleGit(workspace);
     await git.addConfig("user.email", "arnav@surve.dev");
     await git.addConfig("user.name", "ADD Agent");
-    await git.checkoutLocalBranch(job.branchName);
+    await git.checkoutLocalBranch(runBranchName);
+    await updateAgentRunBranch(job.agentRunId, runBranchName);
     await logProgress(
       job.agentRunId,
       job.ticketId,
       "action",
-      `Created branch: ${job.branchName}`,
+      `Created branch: ${runBranchName}`,
     );
-    console.log(`Created branch: ${job.branchName}`);
+    console.log(`Created branch: ${runBranchName}`);
 
     // 3. Run AI agent to implement the changes
     await runAgent({
@@ -162,9 +230,10 @@ async function main() {
       job.agentRunId,
       job.ticketId,
       "action",
-      "Pushing to GitHub...",
+      `Pushing to remote (${runBranchName})`,
     );
-    await git.push("origin", job.branchName, ["--set-upstream"]);
+    await pushWithRebase(git, runBranchName, job.agentRunId, job.ticketId);
+    await markAgentRunPushed(job.agentRunId, runBranchName);
     console.log("Pushed to GitHub");
 
     // 6. Create PR
@@ -176,7 +245,7 @@ async function main() {
     );
     const prUrl = await createPullRequest(
       job.repoUrl,
-      job.branchName,
+      runBranchName,
       `[ADD Agent] ${job.title}`,
       `## Summary
 

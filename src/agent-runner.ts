@@ -1,6 +1,7 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk";
 import { createOpencodeServer } from "@opencode-ai/sdk";
-import { logProgress } from "./supabase.js";
+import { Agent, setGlobalDispatcher } from "undici";
+import { logProgress, getAgentRunStatus } from "./supabase.js";
 
 interface RunAgentOptions {
   workspace: string;
@@ -10,31 +11,35 @@ interface RunAgentOptions {
   ticketId: string;
 }
 
-// Custom fetch with extended timeout for long-running agent tasks
-// Default Node.js fetch timeout is ~5 minutes which is too short for complex tasks
-const AGENT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const STATUS_POLL_INTERVAL_MS = 3000;
+const STOP_CHECK_INTERVAL_MS = 3000;
+const EVENT_STREAM_MAX_RETRIES = 5;
+const CONNECT_TIMEOUT_MS = 30_000;
 
-function createLongTimeoutFetch(): typeof fetch {
-  return async (input: RequestInfo | URL, init?: RequestInit) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
+function configureHttpTimeouts(): void {
+  const dispatcher = new Agent({
+    headersTimeout: 0,
+    bodyTimeout: 0,
+    connectTimeout: CONNECT_TIMEOUT_MS,
+  });
 
-    try {
-      const response = await fetch(input, {
-        ...init,
-        signal: init?.signal ?? controller.signal,
-      });
-      return response;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  };
+  setGlobalDispatcher(dispatcher);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRetryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** (attempt - 1), 10_000);
 }
 
 export async function runAgent(options: RunAgentOptions): Promise<void> {
   const { workspace, title, description, agentRunId, ticketId } = options;
 
   await logProgress(agentRunId, ticketId, "thinking", "Starting agent runtime");
+
+  configureHttpTimeouts();
 
   // Create embedded server
   const server = await createOpencodeServer({
@@ -53,13 +58,12 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     },
   });
 
-  // Create client with custom fetch for extended timeout
+  // Create client with extended timeout configuration
   const client = createOpencodeClient({
     baseUrl: server.url,
-    fetch: createLongTimeoutFetch(),
   });
 
-  console.log("OpenCode server ready (30 min timeout configured)");
+  console.log("OpenCode server ready (extended timeouts configured)");
 
   try {
     // Create session in the workspace
@@ -84,7 +88,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     const prompt = buildPrompt(title, description);
     await logProgress(agentRunId, ticketId, "thinking", "Exploring...");
 
-    const promptResult = await client.session.prompt({
+    const promptResult = await client.session.promptAsync({
       path: { id: sessionId },
       query: { directory: workspace },
       body: {
@@ -99,19 +103,15 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       );
     }
 
-    console.log("Agent task complete");
-    await logProgress(
+    await waitForAgentCompletion(
+      client,
+      sessionId,
       agentRunId,
       ticketId,
-      "action",
-      "Implementation complete",
+      workspace,
     );
 
-    // Abort and cleanup session to stop any ongoing work
-    await client.session.abort({
-      path: { id: sessionId },
-      query: { directory: workspace },
-    });
+    console.log("Agent task complete");
 
     await client.session.delete({
       path: { id: sessionId },
@@ -138,6 +138,82 @@ ${description}
 Please proceed with the implementation.`;
 }
 
+async function waitForAgentCompletion(
+  client: ReturnType<typeof createOpencodeClient>,
+  sessionId: string,
+  agentRunId: string,
+  ticketId: string,
+  workspace: string,
+): Promise<void> {
+  let statusErrorCount = 0;
+  let lastStopCheck = 0;
+  let lastRetryMessage: string | null = null;
+
+  while (true) {
+    const now = Date.now();
+    if (now - lastStopCheck >= STOP_CHECK_INTERVAL_MS) {
+      lastStopCheck = now;
+      if (await isStopRequested(agentRunId)) {
+        await logProgress(agentRunId, ticketId, "action", "Stopping agent run");
+        await client.session.abort({
+          path: { id: sessionId },
+          query: { directory: workspace },
+        });
+        throw new Error("Stopped by user");
+      }
+    }
+
+    const statusResult = await client.session.status({
+      query: { directory: workspace },
+    });
+
+    if (statusResult.error) {
+      statusErrorCount += 1;
+      if (statusErrorCount >= 3) {
+        throw new Error(
+          `OpenCode server unavailable while checking session status: ${JSON.stringify(
+            statusResult.error,
+          )}`,
+        );
+      }
+      await sleep(getRetryDelay(statusErrorCount));
+      continue;
+    }
+
+    statusErrorCount = 0;
+    const status = statusResult.data?.[sessionId];
+
+    if (!status) {
+      throw new Error("OpenCode server returned no status for active session");
+    }
+
+    if (status.type === "idle") {
+      return;
+    }
+
+    if (status.type === "retry" && status.message !== lastRetryMessage) {
+      lastRetryMessage = status.message;
+      await logProgress(
+        agentRunId,
+        ticketId,
+        "thinking",
+        `Agent retrying: ${status.message}`,
+      );
+    }
+
+    await sleep(STATUS_POLL_INTERVAL_MS);
+  }
+}
+
+async function isStopRequested(agentRunId: string): Promise<boolean> {
+  const status = await getAgentRunStatus(agentRunId);
+  if (!status) {
+    return false;
+  }
+
+  return status.status === "failed" && status.error === "Stopped by user";
+}
+
 // Track logged diffs to prevent duplicates (session.diff fires multiple times)
 const loggedDiffKeys = new Set<string>();
 
@@ -151,17 +227,34 @@ async function streamEventsToSupabase(
   // Clear tracked diffs for new session
   loggedDiffKeys.clear();
 
-  try {
-    const eventResult = await client.event.subscribe({
-      query: { directory: workspace },
-    });
+  let attempt = 0;
 
-    // The SSE result has a .stream property that is the async generator
-    for await (const event of eventResult.stream) {
-      await handleEvent(event as Event, sessionId, agentRunId, ticketId);
+  while (attempt <= EVENT_STREAM_MAX_RETRIES) {
+    try {
+      const eventResult = await client.event.subscribe({
+        query: { directory: workspace },
+      });
+
+      // The SSE result has a .stream property that is the async generator
+      for await (const event of eventResult.stream) {
+        await handleEvent(event as Event, sessionId, agentRunId, ticketId);
+      }
+
+      return;
+    } catch (error) {
+      attempt += 1;
+      console.error(
+        `Event stream error (attempt ${attempt}/${EVENT_STREAM_MAX_RETRIES}):`,
+        error,
+      );
+
+      if (attempt >= EVENT_STREAM_MAX_RETRIES) {
+        console.error("Event stream retries exhausted; stopping updates.");
+        return;
+      }
+
+      await sleep(getRetryDelay(attempt));
     }
-  } catch (error) {
-    console.error("Event stream error:", error);
   }
 }
 

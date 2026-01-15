@@ -15,7 +15,8 @@
     "@opencode-ai/sdk": "^1.1.14",
     "@supabase/supabase-js": "^2.90.1",
     "dotenv": "^17.2.3",
-    "simple-git": "^3.27.0"
+    "simple-git": "^3.27.0",
+    "undici": "^6.21.2"
   },
   "devDependencies": {
     "@types/node": "^20",

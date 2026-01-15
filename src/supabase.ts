@@ -54,6 +54,54 @@ export async function updateTicketStatus(
   }
 }
 
+export async function getAgentRunStatus(
+  agentRunId: string
+): Promise<{ status: 'running' | 'complete' | 'failed'; error: string | null } | null> {
+  const { data, error } = await supabase
+    .from('agent_runs')
+    .select('status, error')
+    .eq('id', agentRunId)
+    .single()
+
+  if (error) {
+    console.error('Failed to fetch agent run status:', error)
+    return null
+  }
+
+  return data as { status: 'running' | 'complete' | 'failed'; error: string | null }
+}
+
+export async function updateAgentRunBranch(
+  agentRunId: string,
+  branchName: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('agent_runs')
+    .update({ branch_name: branchName })
+    .eq('id', agentRunId)
+
+  if (error) {
+    console.error('Failed to update agent run branch:', error)
+  }
+}
+
+export async function markAgentRunPushed(
+  agentRunId: string,
+  branchName: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('agent_runs')
+    .update({
+      branch_name: branchName,
+      branch_pushed_at: new Date().toISOString(),
+    })
+    .eq('id', agentRunId)
+
+  if (error) {
+    console.error('Failed to mark agent run pushed:', error)
+  }
+}
+
 // Update agent run status
 export async function updateAgentRun(
   agentRunId: string,
