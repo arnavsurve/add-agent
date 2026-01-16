@@ -20,13 +20,35 @@ const noTimeoutAgent = new Agent({
 // Replace global fetch with undici fetch using our custom agent
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-  const url = typeof input === "string" 
-    ? input 
-    : input instanceof URL 
-      ? input.toString() 
-      : input.url;
+  // If input is a Request object, extract its properties
+  if (input && typeof input === 'object' && 'url' in input && !(input instanceof URL)) {
+    const request = input as Request;
+    const url = request.url;
+    // Merge request properties with init, init takes precedence
+    // Add duplex: 'half' when there's a body (required by undici for streaming bodies)
+    const mergedInit: Record<string, unknown> = {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      ...init,
+      dispatcher: noTimeoutAgent,
+    };
+    if (mergedInit.body) {
+      mergedInit.duplex = 'half';
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return undiciFetch(url, mergedInit as any);
+  }
+  
+  // For string or URL input
+  const url = typeof input === "string" ? input : input.toString();
+  // Add duplex: 'half' when there's a body
+  const options: Record<string, unknown> = { ...init, dispatcher: noTimeoutAgent };
+  if (options.body) {
+    options.duplex = 'half';
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return undiciFetch(url, { ...init, dispatcher: noTimeoutAgent } as any);
+  return undiciFetch(url, options as any);
 };
 
 console.log("Patched globalThis.fetch with undici (no timeout)");
