@@ -61,13 +61,50 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       query: { directory: workspace },
     });
 
+    console.log("Session create raw response:", JSON.stringify(sessionResult, null, 2));
+    console.log("Response status:", sessionResult.response?.status);
+    console.log("Response headers:", JSON.stringify(Object.fromEntries(sessionResult.response?.headers?.entries?.() || [])));
+
     if (sessionResult.error) {
       throw new Error(
         `Failed to create session: ${JSON.stringify(sessionResult.error)}`,
       );
     }
 
-    const sessionId = sessionResult.data.id;
+    // The API might return the session directly or nested in data
+    // Handle various response shapes
+    const sessionData = sessionResult.data;
+    let sessionId: string | undefined;
+    
+    if (typeof sessionData === 'string') {
+      sessionId = sessionData;
+    } else if (sessionData && typeof sessionData === 'object') {
+      // Could be { id: ... } or the session object itself
+      sessionId = (sessionData as { id?: string }).id;
+    }
+    
+    // If still no ID, try listing sessions and getting the most recent one
+    if (!sessionId) {
+      console.log("No session ID in create response, fetching session list...");
+      const listResult = await client.session.list({
+        query: { directory: workspace },
+      });
+      console.log("Session list response:", JSON.stringify(listResult, null, 2));
+      
+      if (listResult.data && Array.isArray(listResult.data) && listResult.data.length > 0) {
+        // Sort by created time descending and get the most recent
+        const sessions = listResult.data.sort((a, b) => 
+          (b.time?.created || 0) - (a.time?.created || 0)
+        );
+        sessionId = sessions[0].id;
+        console.log(`Found session from list: ${sessionId}`);
+      }
+    }
+    
+    if (!sessionId) {
+      throw new Error(`Session created but no ID returned: ${JSON.stringify(sessionResult)}`);
+    }
+    
     console.log(`Session created: ${sessionId}`);
 
     // Start event streaming in background (with abort signal)
@@ -145,6 +182,7 @@ async function waitForAgentCompletion(
   let statusErrorCount = 0;
   let lastStopCheck = 0;
   let lastRetryMessage: string | null = null;
+  let emptyStatusCount = 0; // Track consecutive empty status responses
 
   while (true) {
     // Check for stop request first (every iteration, not just every STOP_CHECK_INTERVAL_MS)
@@ -188,11 +226,40 @@ async function waitForAgentCompletion(
     }
 
     statusErrorCount = 0;
+    
     const status = statusResult.data?.[sessionId];
 
     if (!status) {
-      throw new Error("OpenCode server returned no status for active session");
+      // Status endpoint returned empty or session not found
+      emptyStatusCount++;
+      console.log(`Empty status response #${emptyStatusCount} for session ${sessionId}`);
+      
+      if (emptyStatusCount < 5) {
+        // Give it a few tries at the start (session may not be ready yet)
+        console.log("Session not in status yet, waiting...");
+        await sleep(1000);
+        continue;
+      }
+      
+      // After 5 empty responses, check if the session still exists
+      console.log("Checking if session still exists after 5 empty status responses...");
+      const sessionCheck = await client.session.get({
+        path: { id: sessionId },
+        query: { directory: workspace },
+      });
+      
+      if (sessionCheck.error) {
+        // Session doesn't exist anymore - something went wrong
+        throw new Error(`Session ${sessionId} no longer exists: ${JSON.stringify(sessionCheck.error)}`);
+      }
+      
+      // Session exists but not in status - assume it completed (idle sessions may not appear in status)
+      console.log("Session exists but not in status - assuming completed");
+      return;
     }
+    
+    // Reset empty count when we get a valid status
+    emptyStatusCount = 0;
 
     if (status.type === "idle") {
       return;
