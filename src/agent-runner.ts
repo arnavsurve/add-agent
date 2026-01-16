@@ -11,8 +11,8 @@ interface RunAgentOptions {
   ticketId: string;
 }
 
-const STATUS_POLL_INTERVAL_MS = 3000;
-const STOP_CHECK_INTERVAL_MS = 3000;
+const STATUS_POLL_INTERVAL_MS = 2000;
+const STOP_CHECK_INTERVAL_MS = 1000;
 const EVENT_STREAM_MAX_RETRIES = 5;
 const CONNECT_TIMEOUT_MS = 30_000;
 
@@ -65,6 +65,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
 
   console.log("OpenCode server ready (extended timeouts configured)");
 
+  // Create abort controller for cancelling event stream
+  const eventStreamAbort = new AbortController();
+
   try {
     // Create session in the workspace
     const sessionResult = await client.session.create({
@@ -81,8 +84,15 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     const sessionId = sessionResult.data.id;
     console.log(`Session created: ${sessionId}`);
 
-    // Start event streaming in background
-    streamEventsToSupabase(client, sessionId, agentRunId, ticketId, workspace);
+    // Start event streaming in background (with abort signal)
+    streamEventsToSupabase(
+      client,
+      sessionId,
+      agentRunId,
+      ticketId,
+      workspace,
+      eventStreamAbort.signal,
+    );
 
     // Build and send prompt
     const prompt = buildPrompt(title, description);
@@ -118,7 +128,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       query: { directory: workspace },
     });
   } finally {
-    // Stop embedded server
+    // Stop event stream and embedded server
+    eventStreamAbort.abort();
     server.close();
   }
 }
@@ -150,15 +161,25 @@ async function waitForAgentCompletion(
   let lastRetryMessage: string | null = null;
 
   while (true) {
+    // Check for stop request first (every iteration, not just every STOP_CHECK_INTERVAL_MS)
     const now = Date.now();
     if (now - lastStopCheck >= STOP_CHECK_INTERVAL_MS) {
       lastStopCheck = now;
       if (await isStopRequested(agentRunId)) {
+        console.log("Stop requested, aborting session...");
         await logProgress(agentRunId, ticketId, "action", "Stopping agent run");
-        await client.session.abort({
-          path: { id: sessionId },
-          query: { directory: workspace },
-        });
+        
+        // Abort the OpenCode session
+        try {
+          await client.session.abort({
+            path: { id: sessionId },
+            query: { directory: workspace },
+          });
+          console.log("Session abort sent");
+        } catch (abortError) {
+          console.error("Error sending abort:", abortError);
+        }
+        
         throw new Error("Stopped by user");
       }
     }
@@ -223,25 +244,38 @@ async function streamEventsToSupabase(
   agentRunId: string,
   ticketId: string,
   workspace: string,
+  abortSignal: AbortSignal,
 ): Promise<void> {
   // Clear tracked diffs for new session
   loggedDiffKeys.clear();
 
   let attempt = 0;
 
-  while (attempt <= EVENT_STREAM_MAX_RETRIES) {
+  while (attempt <= EVENT_STREAM_MAX_RETRIES && !abortSignal.aborted) {
     try {
       const eventResult = await client.event.subscribe({
         query: { directory: workspace },
+        signal: abortSignal, // Pass abort signal to cancel the SSE connection
       });
 
       // The SSE result has a .stream property that is the async generator
       for await (const event of eventResult.stream) {
+        // Check abort signal before processing each event
+        if (abortSignal.aborted) {
+          console.log("Event stream aborted");
+          return;
+        }
         await handleEvent(event as Event, sessionId, agentRunId, ticketId);
       }
 
       return;
     } catch (error) {
+      // Don't retry if aborted
+      if (abortSignal.aborted) {
+        console.log("Event stream aborted");
+        return;
+      }
+
       attempt += 1;
       console.error(
         `Event stream error (attempt ${attempt}/${EVENT_STREAM_MAX_RETRIES}):`,
@@ -380,6 +414,36 @@ async function handleEvent(
         const error = props.error;
         const errorMsg = error ? JSON.stringify(error) : "Unknown error";
         await logProgress(agentRunId, ticketId, "error", errorMsg);
+      }
+      break;
+    }
+
+    case "todo.updated": {
+      const todoSessionId = props.sessionID as string;
+      if (todoSessionId !== sessionId) break;
+
+      const todos = props.todos as
+        | Array<{
+            id: string;
+            content: string;
+            status: string;
+            priority: string;
+          }>
+        | undefined;
+
+      if (todos && todos.length > 0) {
+        const completed = todos.filter((t) => t.status === "completed").length;
+        const inProgress = todos.filter(
+          (t) => t.status === "in_progress",
+        ).length;
+
+        await logProgress(
+          agentRunId,
+          ticketId,
+          "todo_update",
+          `Todos: ${completed}/${todos.length} complete${inProgress > 0 ? `, ${inProgress} in progress` : ""}`,
+          { todos },
+        );
       }
       break;
     }
