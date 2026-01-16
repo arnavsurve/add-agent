@@ -61,65 +61,6 @@ function extractErrorMessage(error: unknown): string {
   return `Unknown error: ${String(error)}`;
 }
 
-function isNonFastForwardError(error: unknown): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : JSON.stringify(error);
-
-  return (
-    message.includes("non-fast-forward") ||
-    message.includes("failed to push some refs")
-  );
-}
-
-async function pushWithRebase(
-  git: ReturnType<typeof simpleGit>,
-  branchName: string,
-  agentRunId: string,
-  ticketId: string,
-): Promise<void> {
-  try {
-    await git.push("origin", branchName, ["--set-upstream"]);
-  } catch (error) {
-    if (!isNonFastForwardError(error)) {
-      throw error;
-    }
-
-    await logProgress(
-      agentRunId,
-      ticketId,
-      "action",
-      "Remote branch updated; rebasing before retrying push",
-    );
-
-    await git.fetch("origin", branchName);
-
-    try {
-      await git.rebase([`origin/${branchName}`]);
-    } catch (rebaseError) {
-      try {
-        await git.rebase(["--abort"]);
-      } catch {
-        // Ignore rebase abort failures; surface original error
-      }
-      throw new Error(
-        `Rebase failed due to conflicts. Please re-run the agent after resolving conflicts on ${branchName}.`,
-      );
-    }
-
-    await logProgress(
-      agentRunId,
-      ticketId,
-      "action",
-      "Rebase complete; retrying push",
-    );
-
-    await git.push("origin", branchName, ["--set-upstream"]);
-  }
-}
 
 // Job passed via environment variable
 interface AgentJob {
@@ -232,7 +173,7 @@ async function main() {
       "action",
       `Pushing to remote (${runBranchName})`,
     );
-    await pushWithRebase(git, runBranchName, job.agentRunId, job.ticketId);
+    await git.push("origin", runBranchName, ["--set-upstream"]);
     await markAgentRunPushed(job.agentRunId, runBranchName);
     console.log("Pushed to GitHub");
 
