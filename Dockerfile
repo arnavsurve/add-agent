@@ -20,5 +20,5 @@ COPY . .
 # Build TypeScript
 RUN npm run build
 
-# Run the agent
-CMD ["node", "dist/index.js"]
+# Run the agent via bootstrap (patches fetch before loading main code)
+CMD ["node", "dist/bootstrap.js"]

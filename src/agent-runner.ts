@@ -1,6 +1,5 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk";
 import { createOpencodeServer } from "@opencode-ai/sdk";
-import { Agent, fetch as undiciFetch, setGlobalDispatcher } from "undici";
 import { logProgress, getAgentRunStatus } from "./supabase.js";
 
 interface RunAgentOptions {
@@ -14,33 +13,6 @@ interface RunAgentOptions {
 const STATUS_POLL_INTERVAL_MS = 2000;
 const STOP_CHECK_INTERVAL_MS = 1000;
 const EVENT_STREAM_MAX_RETRIES = 5;
-const CONNECT_TIMEOUT_MS = 30_000;
-
-// Create a shared undici agent with no timeouts for long-running requests
-const noTimeoutAgent = new Agent({
-  headersTimeout: 0,
-  bodyTimeout: 0,
-  connectTimeout: CONNECT_TIMEOUT_MS,
-});
-
-// Custom fetch that uses undici with no timeouts
-// This is needed because the SDK's SSE client uses raw fetch() which has default timeouts
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createNoTimeoutFetch(): any {
-  return (input: string | URL | Request, init?: RequestInit) => {
-    // Convert to string URL for undici compatibility
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    return undiciFetch(url, {
-      ...init,
-      dispatcher: noTimeoutAgent,
-    } as any);
-  };
-}
-
-function configureHttpTimeouts(): void {
-  // Also set global dispatcher for any other fetch calls
-  setGlobalDispatcher(noTimeoutAgent);
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,8 +26,6 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   const { workspace, title, description, agentRunId, ticketId } = options;
 
   await logProgress(agentRunId, ticketId, "thinking", "Starting agent runtime");
-
-  configureHttpTimeouts();
 
   // Create embedded server
   const server = await createOpencodeServer({
@@ -74,11 +44,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     },
   });
 
-  // Create client with custom fetch that has no timeouts
-  // This is critical for SSE streams that can have long pauses between events
+  // Create client - globalThis.fetch is already patched in index.ts with no timeouts
   const client = createOpencodeClient({
     baseUrl: server.url,
-    fetch: createNoTimeoutFetch(),
   });
 
   console.log("OpenCode server ready (extended timeouts configured)");

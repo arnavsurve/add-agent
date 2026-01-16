@@ -1,3 +1,6 @@
+// NOTE: globalThis.fetch is patched in bootstrap.ts before this module loads
+// This allows the SDK and other modules to use our timeout-free fetch
+
 import { simpleGit } from "simple-git";
 import { getAuthenticatedCloneUrl, createPullRequest } from "./github.js";
 import {
